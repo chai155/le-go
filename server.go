@@ -3,11 +3,20 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
+)
+
+const (
+	daysInMonth       = 30
+	daysInYear        = 360
+	numOfMonthsInYear = 12
+	address           = ":8080"
+	endpoint          = "/generate-plan"
 )
 
 type Payload struct {
@@ -17,136 +26,144 @@ type Payload struct {
 	StartDate   string `json:"startDate"`
 }
 
-type RepaymentPlanResponse struct {
-	BorrowerPaymentAmount         string `json:"borrowerPaymentAmount"`
-	Date                          string `json:"date"`
-	InitialOutstandingPrincipal   string `json:"initialOutstandingPrincipal"`
-	Interest                      string `json:"interest"`
-	Principal                     string `json:"principal"`
-	RemainingOutstandingPrincipal string `json:"remainingOutstandingPrincipal"`
-}
-
 type RepaymentPlan struct {
-	borrowerPaymentAmount         float64
-	date                          string
-	initialOutstandingPrincipal   float64
-	interest                      float64
-	principal                     float64
-	remainingOutstandingPrincipal float64
+	BorrowerPaymentAmount         float64 `json:"borrowerPaymentAmount"`
+	Date                          string  `json:"date"`
+	InitialOutstandingPrincipal   float64 `json:"initialOutstandingPrincipal"`
+	Interest                      float64 `json:"interest"`
+	Principal                     float64 `json:"principal"`
+	RemainingOutstandingPrincipal float64 `json:"remainingOutstandingPrincipal"`
 }
 
-func sendErrorResponse(rw http.ResponseWriter, err error, msg string, code int) {
-	if err != nil {
-		http.Error(rw, msg, code)
-		return
+type RepaymentPlanResponse struct {
+	RepaymentPlan []RepaymentPlan
+}
+
+// round floating point values to 2 decimal points
+func RoundFloat(x float64) float64 {
+	f, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", x), 64)
+	return f
+}
+
+// validate the request body
+func (p *Payload) validateRequest() (float64, float64, time.Time, url.Values) {
+	errors := url.Values{}
+
+	if p.StartDate == "" {
+		errors.Add("StartDate", "Required Field Missing")
 	}
-}
+	if p.LoanAmount == "" {
+		errors.Add("LoanAmount", "Required Field Missing")
+	}
+	if p.Duration <= 0 {
+		errors.Add("Duration", "Required Field Missing")
+	}
+	if p.NominalRate == "" {
+		errors.Add("NominalRate", "Required Field Missing")
+	}
 
-func generatePaymentPlan(rw http.ResponseWriter, p *Payload) {
-	daysInMonth := 30
-	daysInYear := 360
-	numOfMonthsInYear := 12
+	if len(errors) > 0 {
+		return 0.0, 0.0, time.Time{}, errors
+	}
 
 	startDate, err := time.Parse(time.RFC3339, p.StartDate)
-	sendErrorResponse(rw, err, "Could not parse startDate to RFC3339 format", 400)
+	if err != nil {
+		errors.Add("StartDate", "Could not parse startDate to RFC3339 format")
+	}
+	nominalRateCents, err := strconv.ParseFloat(p.NominalRate, 64)
+	if err != nil {
+		errors.Add("NominalRate", "Could not convert nominalRate from string to float64")
+	}
+	loanAmount, err := strconv.ParseFloat(p.LoanAmount, 64)
+	if err != nil {
+		errors.Add("LoanAmount", "Could not convert loanAmount from string to float64")
+	}
+	if loanAmount <= 0.0 && nominalRateCents < 0.0 && p.Duration <= 0 {
+		errors.Add("LoanAmount, NominalRateCents, Duration", "Requests are negative numbers")
+	}
+	return loanAmount, nominalRateCents, startDate, errors
+}
+
+// generate a payment plan
+func generatePaymentPlan(loanAmount, nominalRateCents float64, startDate time.Time, duration int) RepaymentPlanResponse {
+	var rp RepaymentPlan
+	var rps RepaymentPlanResponse
+
 	year, month, day := startDate.Date()
 	date := time.Date(year, month, day, 00, 00, 00, 0, time.UTC)
+	nominalRateDollar := nominalRateCents / 100
+	nominalRatePerYear := nominalRateDollar / float64(numOfMonthsInYear)
+	annuity := (loanAmount * nominalRatePerYear) / (1 - math.Pow((1+nominalRatePerYear), -float64(duration)))
 
-	nominalRateCents, err := strconv.ParseFloat(p.NominalRate, 64)
-	sendErrorResponse(rw, err, "Could not convert nominalRate from string to float64", 400)
+	// calculate the first month repayment plan
+	rp.InitialOutstandingPrincipal = RoundFloat(loanAmount)
+	rp.Interest = RoundFloat((nominalRateDollar * float64(daysInMonth) * rp.InitialOutstandingPrincipal) / float64(daysInYear))
+	rp.BorrowerPaymentAmount = RoundFloat(annuity)
+	rp.Principal = RoundFloat(rp.BorrowerPaymentAmount - rp.Interest)
+	rp.RemainingOutstandingPrincipal = RoundFloat(rp.InitialOutstandingPrincipal - rp.Principal)
+	rp.Date = date.Format(time.RFC3339)
+	rps.RepaymentPlan = append(rps.RepaymentPlan, rp)
 
-	loanAmount, err := strconv.ParseFloat(p.LoanAmount, 64)
-	sendErrorResponse(rw, err, "Could not convert loanAmount from string to float64", 400)
+	// use the first month repayment plan to calculate the rest of the repayment plan
+	for i := 1; i < duration; i++ {
 
-	if loanAmount > 0.0 && nominalRateCents > 0.0 && p.Duration > 0 {
-		var rp RepaymentPlan
-		rps := []RepaymentPlan{}
+		// increment the months and years
+		date = date.AddDate(0, 1, 0)
+		rp.Date = date.Format(time.RFC3339)
 
-		nominalRateDollar := nominalRateCents / 100
-		nominalRatePerYear := nominalRateDollar / float64(numOfMonthsInYear)
-		annuity := (loanAmount * nominalRatePerYear) / (1 - math.Pow((1+nominalRatePerYear), -24))
+		rp.InitialOutstandingPrincipal = RoundFloat(rps.RepaymentPlan[i-1].RemainingOutstandingPrincipal)
+		rp.Interest = RoundFloat((nominalRateDollar * float64(daysInMonth) * rp.InitialOutstandingPrincipal) / float64(daysInYear))
 
-		rp.initialOutstandingPrincipal = math.Ceil(loanAmount*100) / 100
-		rp.interest = math.Ceil(((nominalRateDollar*float64(daysInMonth)*rp.initialOutstandingPrincipal)/float64(daysInYear))*100) / 100
-		rp.borrowerPaymentAmount = math.Ceil(annuity*100) / 100
-		rp.principal = math.Ceil((rp.borrowerPaymentAmount-rp.interest)*100) / 100
-		rp.remainingOutstandingPrincipal = math.Ceil((rp.initialOutstandingPrincipal-rp.principal)*100) / 100
-		rp.date = date.Format(time.RFC3339)
-		rps = append(rps, rp)
-
-		for i := 1; i < p.Duration; i++ {
-			date = date.AddDate(0, 1, 0)
-			rp.date = date.Format(time.RFC3339)
-
-			rp.initialOutstandingPrincipal = math.Ceil(rps[i-1].remainingOutstandingPrincipal*100) / 100
-			rp.interest = math.Ceil(((nominalRateDollar*float64(daysInMonth)*rp.initialOutstandingPrincipal)/float64(daysInYear))*100) / 100
-			if i == p.Duration-1 { // TODO
-				rp.borrowerPaymentAmount = math.Ceil((rp.initialOutstandingPrincipal+rp.interest)*100) / 100
-				fmt.Println(p.Duration, rp.borrowerPaymentAmount)
-			} else {
-				rp.borrowerPaymentAmount = math.Ceil(rps[i-1].borrowerPaymentAmount*100) / 100
-			}
-			if rp.interest*100 > rp.initialOutstandingPrincipal {
-				rp.principal = math.Ceil((rp.borrowerPaymentAmount-rp.initialOutstandingPrincipal)*100) / 100
-			} else {
-				rp.principal = math.Ceil((rp.borrowerPaymentAmount-rp.interest)*100) / 100
-			}
-			rp.remainingOutstandingPrincipal = math.Ceil((rp.initialOutstandingPrincipal-rp.principal)*100) / 100
-			rps = append(rps, rp)
-
+		// last month borrowerPaymentAmount
+		if i == duration-1 { // TODO
+			rp.BorrowerPaymentAmount = RoundFloat(rp.InitialOutstandingPrincipal + rp.Interest)
+		} else {
+			rp.BorrowerPaymentAmount = RoundFloat(rps.RepaymentPlan[i-1].BorrowerPaymentAmount)
 		}
-		for i, val := range rps {
-			fmt.Println("\n", i)
-			fmt.Println("val: ", val)
-			/*fmt.Println("BorrowerPaymentAmount: ", rpf.BorrowerPaymentAmount)
-			fmt.Println("InitialOutstandingPrincipal: ", rpf.InitialOutstandingPrincipal)
-			fmt.Println("Interest: ", rpf.Interest)
-			fmt.Println("Principal: ", rpf.Principal)
-			fmt.Println("RemainingOutstandingPrincipal: ", rpf.RemainingOutstandingPrincipal)*/
+
+		if rp.Interest > rp.InitialOutstandingPrincipal {
+			rp.Principal = RoundFloat(rp.BorrowerPaymentAmount - rp.InitialOutstandingPrincipal)
+		} else {
+			rp.Principal = RoundFloat(rp.BorrowerPaymentAmount - rp.Interest)
 		}
-	} else { // TODO
-		http.Error(rw, "Invalid request", 400)
-		return
+
+		rp.RemainingOutstandingPrincipal = RoundFloat(rp.InitialOutstandingPrincipal - rp.Principal)
+		rps.RepaymentPlan = append(rps.RepaymentPlan, rp)
 	}
+
+	return rps
 }
 
 func generatePlanHandler(rw http.ResponseWriter, req *http.Request) {
-	// Read body
-	request, err := ioutil.ReadAll(req.Body)
+	// unmarshal the request body
+	var payload Payload
+	rw.Header().Set("content-type", "application/json")
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		http.Error(rw, "Could not unmarshal the request to JSON", http.StatusBadRequest)
+		return
+	}
 	defer req.Body.Close()
-	if err != nil {
-		http.Error(rw, err.Error(), 500)
+
+	// validate request and generate the repayment plan
+	loanAmount, nominalRateCents, startDate, err := payload.validateRequest()
+	if len(err) > 0 {
+		err := map[string]interface{}{"Validation Errors": err}
+		rw.WriteHeader(http.StatusBadRequest)
+		if encError := json.NewEncoder(rw).Encode(err); encError != nil {
+			http.Error(rw, "An error occurred!", http.StatusInternalServerError)
+		}
 		return
 	}
+	respMsg := generatePaymentPlan(loanAmount, nominalRateCents, startDate, payload.Duration)
 
-	// Unmarshal
-	payload := Payload{}
-	err = json.Unmarshal(request, &payload)
-	if err != nil {
-		http.Error(rw, err.Error(), 500)
+	// Write Response
+	if err := json.NewEncoder(rw).Encode(respMsg); err != nil {
+		http.Error(rw, "Could not marshal the response json", http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Println("payload", payload)
-
-	//respMsg := generatePaymentPlan(&payload)
-	generatePaymentPlan(rw, &payload)
-
-	/* Write Response
-	output, err := json.Marshal(respMsg)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	w.Header().Set("content-type", "application/json")
-	w.Write(output)*/
 }
 
 func main() {
-	http.HandleFunc("/generate-plan", generatePlanHandler)
-	address := ":8080"
-	err := http.ListenAndServe(address, nil)
-	if err != nil {
-		panic(err)
-	}
+	http.HandleFunc(endpoint, generatePlanHandler)
+	log.Fatal(http.ListenAndServe(address, nil))
 }
