@@ -17,7 +17,7 @@ type Payload struct {
 	StartDate   string `json:"startDate"`
 }
 
-type RepaymentPlan struct {
+type RepaymentPlanResponse struct {
 	BorrowerPaymentAmount         string `json:"borrowerPaymentAmount"`
 	Date                          string `json:"date"`
 	InitialOutstandingPrincipal   string `json:"initialOutstandingPrincipal"`
@@ -26,13 +26,13 @@ type RepaymentPlan struct {
 	RemainingOutstandingPrincipal string `json:"remainingOutstandingPrincipal"`
 }
 
-type RepaymentPlanFloat struct {
-	BorrowerPaymentAmount         float64
-	Date                          string
-	InitialOutstandingPrincipal   float64
-	Interest                      float64
-	Principal                     float64
-	RemainingOutstandingPrincipal float64
+type RepaymentPlan struct {
+	borrowerPaymentAmount         float64
+	date                          string
+	initialOutstandingPrincipal   float64
+	interest                      float64
+	principal                     float64
+	remainingOutstandingPrincipal float64
 }
 
 func sendErrorResponse(rw http.ResponseWriter, err error, msg string, code int) {
@@ -50,7 +50,7 @@ func generatePaymentPlan(rw http.ResponseWriter, p *Payload) {
 	startDate, err := time.Parse(time.RFC3339, p.StartDate)
 	sendErrorResponse(rw, err, "Could not parse startDate to RFC3339 format", 400)
 	year, month, day := startDate.Date()
-	sd := time.Date(year, month, day, 00, 00, 00, 0, time.UTC)
+	date := time.Date(year, month, day, 00, 00, 00, 0, time.UTC)
 
 	nominalRateCents, err := strconv.ParseFloat(p.NominalRate, 64)
 	sendErrorResponse(rw, err, "Could not convert nominalRate from string to float64", 400)
@@ -59,67 +59,51 @@ func generatePaymentPlan(rw http.ResponseWriter, p *Payload) {
 	sendErrorResponse(rw, err, "Could not convert loanAmount from string to float64", 400)
 
 	if loanAmount > 0.0 && nominalRateCents > 0.0 && p.Duration > 0 {
-		var rpf RepaymentPlanFloat
-		rpfs := []RepaymentPlanFloat{}
+		var rp RepaymentPlan
+		rps := []RepaymentPlan{}
 
 		nominalRateDollar := nominalRateCents / 100
 		nominalRatePerYear := nominalRateDollar / float64(numOfMonthsInYear)
 		annuity := (loanAmount * nominalRatePerYear) / (1 - math.Pow((1+nominalRatePerYear), -24))
 
-		/*var rp RepaymentPlan
-		rps := []RepaymentPlan{}
-		rp.InitialOutstandingPrincipal = loanAmount
-		rp.Interest = (nominalRate * float64(daysInMonth) * loanAmount) / float64(daysInYear)
-		rp.BorrowerPaymentAmount = annuity
-		rp.Principal = rp.BorrowerPaymentAmount - rp.Interest
-		rp.RemainingOutstandingPrincipal = rp.InitialOutstandingPrincipal - rp.Principal
-		rps = append(rps, rp)*/
-
-		rpf.InitialOutstandingPrincipal = math.Ceil(loanAmount*100) / 100
-		rpf.Interest = math.Ceil(((nominalRateDollar*float64(daysInMonth)*rpf.InitialOutstandingPrincipal)/float64(daysInYear))*100) / 100
-		rpf.BorrowerPaymentAmount = math.Ceil(annuity*100) / 100
-		rpf.Principal = math.Ceil((rpf.BorrowerPaymentAmount-rpf.Interest)*100) / 100
-		rpf.RemainingOutstandingPrincipal = math.Ceil((rpf.InitialOutstandingPrincipal-rpf.Principal)*100) / 100
-		rpf.Date = sd.Format(time.RFC3339)
-		rpfs = append(rpfs, rpf)
+		rp.initialOutstandingPrincipal = math.Ceil(loanAmount*100) / 100
+		rp.interest = math.Ceil(((nominalRateDollar*float64(daysInMonth)*rp.initialOutstandingPrincipal)/float64(daysInYear))*100) / 100
+		rp.borrowerPaymentAmount = math.Ceil(annuity*100) / 100
+		rp.principal = math.Ceil((rp.borrowerPaymentAmount-rp.interest)*100) / 100
+		rp.remainingOutstandingPrincipal = math.Ceil((rp.initialOutstandingPrincipal-rp.principal)*100) / 100
+		rp.date = date.Format(time.RFC3339)
+		rps = append(rps, rp)
 
 		for i := 1; i < p.Duration; i++ {
+			date = date.AddDate(0, 1, 0)
+			rp.date = date.Format(time.RFC3339)
 
-			prevDate := rpfs[i-1].Date
-			y, m, d := prevDate.Date()
-			if int(month) <= 12 {
-				modifiedStartDate := sd.AddDate(0, 1, 0)
-				rpf.Date = modifiedStartDate.Format(time.RFC3339)
-			} else {
-
-			}
-
-			rpf.InitialOutstandingPrincipal = math.Ceil(rpfs[i-1].RemainingOutstandingPrincipal*100) / 100
-			rpf.Interest = math.Ceil(((nominalRateDollar*float64(daysInMonth)*rpf.InitialOutstandingPrincipal)/float64(daysInYear))*100) / 100
+			rp.initialOutstandingPrincipal = math.Ceil(rps[i-1].remainingOutstandingPrincipal*100) / 100
+			rp.interest = math.Ceil(((nominalRateDollar*float64(daysInMonth)*rp.initialOutstandingPrincipal)/float64(daysInYear))*100) / 100
 			if i == p.Duration-1 { // TODO
-				rpf.BorrowerPaymentAmount = math.Ceil((rpf.InitialOutstandingPrincipal+rpf.Interest)*100) / 100
-				fmt.Println(p.Duration, rpf.BorrowerPaymentAmount)
+				rp.borrowerPaymentAmount = math.Ceil((rp.initialOutstandingPrincipal+rp.interest)*100) / 100
+				fmt.Println(p.Duration, rp.borrowerPaymentAmount)
 			} else {
-				rpf.BorrowerPaymentAmount = math.Ceil(rpfs[i-1].BorrowerPaymentAmount*100) / 100
+				rp.borrowerPaymentAmount = math.Ceil(rps[i-1].borrowerPaymentAmount*100) / 100
 			}
-			if rpf.Interest*100 > rpf.InitialOutstandingPrincipal {
-				rpf.Principal = math.Ceil((rpf.BorrowerPaymentAmount-rpf.InitialOutstandingPrincipal)*100) / 100
+			if rp.interest*100 > rp.initialOutstandingPrincipal {
+				rp.principal = math.Ceil((rp.borrowerPaymentAmount-rp.initialOutstandingPrincipal)*100) / 100
 			} else {
-				rpf.Principal = math.Ceil((rpf.BorrowerPaymentAmount-rpf.Interest)*100) / 100
+				rp.principal = math.Ceil((rp.borrowerPaymentAmount-rp.interest)*100) / 100
 			}
-			rpf.RemainingOutstandingPrincipal = math.Ceil((rpf.InitialOutstandingPrincipal-rpf.Principal)*100) / 100
-			rpfs = append(rpfs, rpf)
+			rp.remainingOutstandingPrincipal = math.Ceil((rp.initialOutstandingPrincipal-rp.principal)*100) / 100
+			rps = append(rps, rp)
 
 		}
-		/*for i, val := range rpfs {
+		for i, val := range rps {
 			fmt.Println("\n", i)
 			fmt.Println("val: ", val)
-			fmt.Println("BorrowerPaymentAmount: ", rpf.BorrowerPaymentAmount)
+			/*fmt.Println("BorrowerPaymentAmount: ", rpf.BorrowerPaymentAmount)
 			fmt.Println("InitialOutstandingPrincipal: ", rpf.InitialOutstandingPrincipal)
 			fmt.Println("Interest: ", rpf.Interest)
 			fmt.Println("Principal: ", rpf.Principal)
-			fmt.Println("RemainingOutstandingPrincipal: ", rpf.RemainingOutstandingPrincipal)
-		}*/
+			fmt.Println("RemainingOutstandingPrincipal: ", rpf.RemainingOutstandingPrincipal)*/
+		}
 	} else { // TODO
 		http.Error(rw, "Invalid request", 400)
 		return
