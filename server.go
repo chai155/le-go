@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"math"
@@ -15,7 +16,6 @@ const (
 	daysInMonth       = 30
 	daysInYear        = 360
 	numOfMonthsInYear = 12
-	address           = ":8080"
 	endpoint          = "/generate-plan"
 )
 
@@ -92,6 +92,8 @@ func generatePaymentPlan(loanAmount, nominalRateCents float64, startDate time.Ti
 	year, month, day := startDate.Date()
 	date := time.Date(year, month, day, 00, 00, 00, 0, time.UTC)
 	nominalRateDollar := nominalRateCents / 100
+
+	// use nominal rate per year to calculate annuity
 	nominalRatePerYear := nominalRateDollar / float64(numOfMonthsInYear)
 	annuity := (loanAmount * nominalRatePerYear) / (1 - math.Pow((1+nominalRatePerYear), -float64(duration)))
 
@@ -147,6 +149,7 @@ func generatePlanHandler(rw http.ResponseWriter, req *http.Request) {
 	// validate request and generate the repayment plan
 	loanAmount, nominalRateCents, startDate, err := payload.validateRequest()
 	if len(err) > 0 {
+		log.Println(err)
 		err := map[string]interface{}{"Validation Errors": err}
 		rw.WriteHeader(http.StatusBadRequest)
 		if encError := json.NewEncoder(rw).Encode(err); encError != nil {
@@ -164,6 +167,8 @@ func generatePlanHandler(rw http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
+	listenAddr := flag.String("http.addr", ":8080", "http listen address")
+	flag.Parse()
 	http.HandleFunc(endpoint, generatePlanHandler)
-	log.Fatal(http.ListenAndServe(address, nil))
+	log.Fatal(http.ListenAndServe(*listenAddr, nil))
 }
