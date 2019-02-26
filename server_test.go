@@ -50,7 +50,7 @@ func Test_generatePlanHandler(t *testing.T) {
 	resbody, err := ioutil.ReadAll(res.Body)
 	res.Body.Close()
 	if err != nil {
-		t.Fatalf("could not close response body: %v", err)
+		t.Fatalf("could not read the response body: %v", err)
 	}
 
 	if reflect.DeepEqual(resbody, expectedByte) {
