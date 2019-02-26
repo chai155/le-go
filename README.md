@@ -5,7 +5,7 @@ The request and response formats are explained below. Please read the comments i
 
 ## Generate Plan
 The repayment plan is generated as a json and sent as a response to the client.
-Calculations are done as mentioned in the "calculation basics" section in the given task document.
+Calculations are done using the formulae mentioned in the "calculation basics" section in the given task document.
 
 ## Request Format
 I used Postman to send the request and receive response.
