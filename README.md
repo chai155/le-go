@@ -11,8 +11,8 @@ Calculations are done using the formulae mentioned in the "calculation basics" s
 I used Postman to send the request and receive response.
 
 Request format is similar to "payload:" request json as mentioned in the task document. Except "duration" all the other json values are parsed as strings. 
-StartDate is accepetd as RFC3339 format.
-Duration which represents number of months is parsed as int.
+StartDate is accepted as RFC3339 format.
+Duration represents the number of months and is parsed as int.
 
 Request type: POST
 Request body: application/json
@@ -27,7 +27,7 @@ Request body: application/json
 ```
 
 ## Response Format
-Response is a json object which contains an array of json objects. Except "date" all the numbers are floating point values. 
+Response is a json object which contains an array of json objects. Except "date" all the numbers are floating point values. Keeping the task document in consideration, the floating point values were rounded of to 2 decimal points.mi
 
 Note: In the task document all the response values in the array object were strings but I am using string only for the date and not for other values to avoid multiple conversion statements.
 
